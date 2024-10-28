@@ -8,7 +8,7 @@ import (
 )
 
 type Job struct {
-	title, deadline, url, company string
+	title, publishedDate, url, company, deadline string
 }
 
 const visitURL = "https://www.finn.no/job/fulltime/search.html?location=1.20001.20061&occupation=0.23&q=nyutdannet"
@@ -17,6 +17,9 @@ func main() {
 	c := colly.NewCollector(
 		colly.AllowedDomains("www.finn.no"),
 	)
+
+	deadlineCollector := c.Clone()
+
 	// called before an HTTP request is triggered
 	c.OnRequest(func(r *colly.Request) {
 		fmt.Println("Visiting: ", r.URL)
@@ -30,25 +33,29 @@ func main() {
 
 	c.OnHTML("div.flex.flex-col",
 		func(h *colly.HTMLElement) {
-			// scraping logic
-			selection := h.DOM
-			// fmt.Println(selection.Find("div.s-text-subtle").Text())
-			companyDiv := selection.Find("div.flex.flex-col.text-xs")
-
 			job := Job{}
 			job.title = h.ChildText("h2")
-			job.company = companyDiv.Text()
-			job.deadline = strings.Split(h.ChildText(".s-text-subtle"), "|")[0]
-			job.url = ""
+			job.company = h.DOM.Find("div.flex.flex-col.text-xs span").First().Text()
+			job.publishedDate = strings.Split(h.ChildText(".s-text-subtle"), "|")[0]
+			job.url = h.ChildAttr("h2 a", "href")
 
-			if job.title != "" {
+			if job.title != "" && job.url != "" {
 				jobs = append(jobs, job)
+				deadlineCollector.Visit(job.url)
 			}
 		})
 
+	// scrape deadline
+	deadlineCollector.OnHTML("li.flex.flex-col", func(h *colly.HTMLElement) {
+		// if deadline has not been scraped
+		if jobs[len(jobs)-1].deadline == "" {
+			jobs[len(jobs)-1].deadline = h.DOM.Find("span.font-bold").First().Text()
+		}
+	})
+
 	c.Visit(visitURL)
 
-	// sort jobs based on deadline
+	// sort jobs based on publishedDate
 	sort.Slice(jobs, func(i, j int) bool {
 		return jobs[i].deadline < jobs[j].deadline
 	})
@@ -58,13 +65,10 @@ func main() {
 		fmt.Println("-----------------------")
 		fmt.Println("Title:", job.title)
 		fmt.Println("Company:", job.company)
-		fmt.Println("Deadline:", job.deadline)
+		fmt.Println("Published:", job.publishedDate)
 		fmt.Println("URL:", job.url)
+		fmt.Println("Deadline:", job.deadline)
 		fmt.Println("-----------------------")
 		fmt.Println()
 	}
-}
-
-func (j Job) String() string {
-	return j.title + " " + j.company
 }
