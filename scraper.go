@@ -3,16 +3,16 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/gocolly/colly"
 	"log"
 	"os"
-	"sort"
+	"strconv"
 	"strings"
-
-	"github.com/gocolly/colly"
 )
 
 type Job struct {
 	Title, PublishedDate, Url, Company, Deadline string
+	Id                                           int
 }
 
 const visitURL = "https://www.finn.no/job/fulltime/search.html?location=1.20001.20061&occupation=0.23&q=nyutdannet"
@@ -33,7 +33,11 @@ func main() {
 		fmt.Println("Error while scraping:", err.Error())
 	})
 
-	jobs := []Job{}
+	// jobsMap, err := loadJobs()
+	jobsMap := make(map[int]Job)
+
+	var lastAddedJobId int
+	var err error
 
 	c.OnHTML("div.flex.flex-col",
 		func(h *colly.HTMLElement) {
@@ -44,7 +48,15 @@ func main() {
 			job.Url = h.ChildAttr("h2 a", "href")
 
 			if job.Title != "" && job.Url != "" {
-				jobs = append(jobs, job)
+				// get uniqe id from url
+				job.Id, err = strconv.Atoi(strings.Split(job.Url, "=")[1])
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				jobsMap[job.Id] = job
+				lastAddedJobId = job.Id
+
 				deadlineCollector.Visit(job.Url)
 			}
 		})
@@ -52,38 +64,44 @@ func main() {
 	// scrape deadline
 	deadlineCollector.OnHTML("li.flex.flex-col", func(h *colly.HTMLElement) {
 		// if deadline has not been scraped
-		if jobs[len(jobs)-1].Deadline == "" {
-			jobs[len(jobs)-1].Deadline = h.DOM.Find("span.font-bold").First().Text()
+		if jobsMap[lastAddedJobId].Deadline == "" {
+			job := jobsMap[lastAddedJobId]
+			job.Deadline = h.DOM.Find("span.font-bold").First().Text()
+			jobsMap[lastAddedJobId] = job
 		}
 	})
 
+	// start scraping jobs
 	c.Visit(visitURL)
 
-	// sort jobs based on publishedDate
-	sort.Slice(jobs, func(i, j int) bool {
-		return jobs[i].Deadline < jobs[j].Deadline
-	})
-
-	fmt.Printf("Found %v jobs\n", len(jobs))
-	for _, job := range jobs {
-		fmt.Println("-----------------------")
-		fmt.Println("Title:", job.Title)
-		fmt.Println("Company:", job.Company)
-		fmt.Println("Published:", job.PublishedDate)
-		fmt.Println("URL:", job.Url)
-		fmt.Println("Deadline:", job.Deadline)
-		fmt.Println("-----------------------")
-		fmt.Println()
-	}
-
-	err := saveJobs(jobs)
-	if err != nil {
+	// send listings via smtp
+	err = sendSmtp(jobsMap)
+	if err == nil {
+		fmt.Println("Successfully sent email!")
+	} else {
 		log.Fatal(err)
 	}
+
+	// save jobs to file
+	saveJobs(jobsMap)
+}
+
+func sendSmtp(jobsMap map[int]Job) error {
+	var sb strings.Builder
+
+	sb.WriteString("Fant " + strconv.Itoa(len(jobsMap)) + " jobbannonser.\n\n")
+	for _, job := range jobsMap {
+		sb.WriteString("Tittel: " + job.Title + "\n")
+		sb.WriteString("Bedrift: " + job.Company + "\n")
+		sb.WriteString("Søknadsfrist: " + job.Deadline + "\n")
+		sb.WriteString("URL: " + job.Url + "\n\n")
+	}
+
+	return sendNewListings(sb.String())
 }
 
 // save jobs to json file
-func saveJobs(jobs []Job) error {
+func saveJobs(jobs map[int]Job) error {
 	file, err := os.Create("jobs.json")
 	if err != nil {
 		return err
@@ -94,8 +112,8 @@ func saveJobs(jobs []Job) error {
 }
 
 // load previously stored jobs from json file
-func loadJobs() ([]Job, error) {
-	var jobs []Job
+func loadJobs() (map[int]Job, error) {
+	jobs := make(map[int]Job)
 	file, err := os.Open("jobs.json")
 	if err != nil {
 		return jobs, err
